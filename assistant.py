@@ -17,7 +17,6 @@ load_dotenv()
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 INWORLD_API_KEY   = os.getenv("INWORLD_API_KEY")
 INWORLD_VOICE_ID  = os.getenv("INWORLD_VOICE_ID")
-LOCATION          = os.getenv("LOCATION", "your location")
 
 if not all([ANTHROPIC_API_KEY, INWORLD_API_KEY, INWORLD_VOICE_ID]):
     print("ERROR: Missing API keys. Check your .env file.")
@@ -33,6 +32,18 @@ SYSTEM_PROMPT = (
 claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 pygame.mixer.init()
 conversation_history: list[dict] = []
+
+
+def get_location() -> str:
+    try:
+        data = requests.get("https://ipapi.co/json/", timeout=5).json()
+        city = data.get("city", "")
+        state = data.get("region", "")
+        if city and state:
+            return f"{city}, {state}"
+    except Exception:
+        pass
+    return os.getenv("LOCATION", "")
 
 
 def speak(text: str) -> None:
@@ -144,7 +155,8 @@ def main() -> None:
     print("=" * 50)
     print("Say 'exit' or 'quit' to stop.\n")
 
-    greeting = f"Online and ready. Welcome back from {LOCATION}."
+    location = get_location()
+    greeting = f"Online and ready. Welcome back from {location}." if location else "Online and ready."
     print(f"JARVIS: {greeting}\n")
     threading.Thread(target=speak, args=(greeting,), daemon=True).start()
 
