@@ -31,7 +31,6 @@ SYSTEM_PROMPT = (
 
 claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 pygame.mixer.init()
-recognizer = sr.Recognizer()
 conversation_history: list[dict] = []
 
 
@@ -78,30 +77,48 @@ def ask_claude(user_message: str) -> str:
     return reply
 
 
-def listen_microphone() -> str | None:
+def listen() -> str:
     sample_rate = 16000
-    duration = 8  # seconds max
+    chunk = 1024
+    silence_rms = 400
+    silence_chunks_needed = int(1.5 * sample_rate / chunk)
+    min_speech_chunks = int(0.4 * sample_rate / chunk)
+    max_chunks = int(15 * sample_rate / chunk)
 
-    print("Listening... (speak now)")
-    recording = sd.rec(
-        int(duration * sample_rate),
-        samplerate=sample_rate,
-        channels=1,
-        dtype="int16",
-    )
-    sd.wait()
+    print("Listening...")
+    frames: list[np.ndarray] = []
+    speech_started = False
+    silent_count = 0
+    speech_count = 0
 
-    audio_data = recording.flatten().tobytes()
-    audio = sr.AudioData(audio_data, sample_rate, 2)
-    try:
-        text = recognizer.recognize_google(audio)
-        print(f"You said: {text}")
-        return text
-    except sr.UnknownValueError:
-        print("Could not understand audio.")
-    except sr.RequestError as e:
-        print(f"Speech recognition error: {e}")
-    return None
+    with sd.InputStream(samplerate=sample_rate, channels=1, dtype="int16", blocksize=chunk) as stream:
+        while len(frames) < max_chunks:
+            data, _ = stream.read(chunk)
+            frames.append(data.copy())
+            rms = float(np.sqrt(np.mean(data.astype(np.float32) ** 2)))
+            if rms > silence_rms:
+                speech_started = True
+                silent_count = 0
+                speech_count += 1
+            elif speech_started:
+                silent_count += 1
+                if silent_count >= silence_chunks_needed and speech_count >= min_speech_chunks:
+                    break
+
+    audio_array = np.concatenate(frames)
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sample_rate)
+        wf.writeframes(audio_array.tobytes())
+    buf.seek(0)
+
+    print("Processing...")
+    recognizer = sr.Recognizer()
+    with sr.AudioFile(buf) as source:
+        audio = recognizer.record(source)
+    return recognizer.recognize_google(audio)  # type: ignore[return-value]
 
 
 def get_input() -> str | None:
@@ -110,7 +127,13 @@ def get_input() -> str | None:
     if choice == "Q":
         return None
     if choice == "M":
-        return listen_microphone()
+        try:
+            return listen()
+        except sr.UnknownValueError:
+            print("Could not understand audio.")
+        except sr.RequestError as e:
+            print(f"Speech recognition error: {e}")
+        return None
     return input("You: ").strip() or None
 
 
