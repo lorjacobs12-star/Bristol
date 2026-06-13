@@ -3,6 +3,7 @@ import io
 import os
 import sys
 import threading
+import wave
 import numpy as np
 import sounddevice as sd
 import anthropic
