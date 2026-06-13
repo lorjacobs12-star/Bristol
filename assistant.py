@@ -3,6 +3,8 @@ import io
 import os
 import sys
 import threading
+import numpy as np
+import sounddevice as sd
 import anthropic
 import requests
 import speech_recognition as sr
@@ -76,20 +78,28 @@ def ask_claude(user_message: str) -> str:
 
 
 def listen_microphone() -> str | None:
-    with sr.Microphone() as source:
-        print("Listening... (speak now)")
-        recognizer.adjust_for_ambient_noise(source, duration=0.5)
-        try:
-            audio = recognizer.listen(source, timeout=8, phrase_time_limit=15)
-            text = recognizer.recognize_google(audio)
-            print(f"You said: {text}")
-            return text
-        except sr.WaitTimeoutError:
-            print("No speech detected.")
-        except sr.UnknownValueError:
-            print("Could not understand audio.")
-        except sr.RequestError as e:
-            print(f"Speech recognition error: {e}")
+    sample_rate = 16000
+    duration = 8  # seconds max
+
+    print("Listening... (speak now)")
+    recording = sd.rec(
+        int(duration * sample_rate),
+        samplerate=sample_rate,
+        channels=1,
+        dtype="int16",
+    )
+    sd.wait()
+
+    audio_data = recording.flatten().tobytes()
+    audio = sr.AudioData(audio_data, sample_rate, 2)
+    try:
+        text = recognizer.recognize_google(audio)
+        print(f"You said: {text}")
+        return text
+    except sr.UnknownValueError:
+        print("Could not understand audio.")
+    except sr.RequestError as e:
+        print(f"Speech recognition error: {e}")
     return None
 
 
