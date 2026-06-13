@@ -17,6 +17,7 @@ load_dotenv()
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 INWORLD_API_KEY   = os.getenv("INWORLD_API_KEY")
 INWORLD_VOICE_ID  = os.getenv("INWORLD_VOICE_ID")
+LOCATION          = os.getenv("LOCATION", "your location")
 
 if not all([ANTHROPIC_API_KEY, INWORLD_API_KEY, INWORLD_VOICE_ID]):
     print("ERROR: Missing API keys. Check your .env file.")
@@ -142,6 +143,10 @@ def main() -> None:
     print("  JARVIS AI Assistant")
     print("=" * 50)
     print("Say 'exit' or 'quit' to stop.\n")
+
+    greeting = f"Online and ready. Welcome back from {LOCATION}."
+    print(f"JARVIS: {greeting}\n")
+    threading.Thread(target=speak, args=(greeting,), daemon=True).start()
 
     while True:
         user_text = get_input()
