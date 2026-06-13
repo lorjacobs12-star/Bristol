@@ -1,61 +1,64 @@
+import base64
+import io
 import os
 import sys
-import io
-import tempfile
 import threading
 import anthropic
 import requests
 import speech_recognition as sr
 import pygame
+from dotenv import load_dotenv
 
-# ── Configuration ────────────────────────────────────────────────────────────
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-INWORLD_API_KEY   = os.environ.get("INWORLD_API_KEY", "")
-INWORLD_WORKSPACE = "sparklypapaya4999"
-INWORLD_VOICE_ID  = "designvoice2b6721f4"
-INWORLD_TTS_URL   = (
-    f"https://studio.inworld.ai/v1/workspaces/{INWORLD_WORKSPACE}"
-    f"/characters/{INWORLD_VOICE_ID}:textToSpeech"
-)
-MODEL             = "claude-opus-4-8"
-SYSTEM_PROMPT     = (
-    "You are JARVIS, an advanced AI assistant — highly intelligent, precise, "
-    "and slightly formal yet personable. Keep responses concise and clear."
+load_dotenv()
+
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+INWORLD_API_KEY   = os.getenv("INWORLD_API_KEY")
+INWORLD_VOICE_ID  = os.getenv("INWORLD_VOICE_ID")
+
+if not all([ANTHROPIC_API_KEY, INWORLD_API_KEY, INWORLD_VOICE_ID]):
+    print("ERROR: Missing API keys. Check your .env file.")
+    sys.exit(1)
+
+MODEL = "claude-opus-4-8"
+SYSTEM_PROMPT = (
+    "You are JARVIS, an advanced AI assistant. You are intelligent, precise, and efficient. "
+    "Respond concisely and naturally as JARVIS would — helpful, professional, and occasionally witty. "
+    "Keep responses short unless detail is specifically requested."
 )
 
-# ── Clients / audio init ──────────────────────────────────────────────────────
-claude  = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 pygame.mixer.init()
 recognizer = sr.Recognizer()
 conversation_history: list[dict] = []
 
 
 def speak(text: str) -> None:
-    """Convert text to speech via Inworld TTS and play it."""
     try:
-        headers = {
-            "Authorization": f"Bearer {INWORLD_API_KEY}",
-            "Content-Type": "application/json",
-        }
-        payload = {"text": text, "voice": {"voiceId": INWORLD_VOICE_ID}}
-        resp = requests.post(INWORLD_TTS_URL, json=payload, headers=headers, timeout=15)
-        resp.raise_for_status()
-
-        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
-            tmp.write(resp.content)
-            tmp_path = tmp.name
-
-        pygame.mixer.music.load(tmp_path)
-        pygame.mixer.music.play()
-        while pygame.mixer.music.get_busy():
-            pygame.time.wait(100)
-        os.unlink(tmp_path)
+        response = requests.post(
+            "https://api.inworld.ai/tts/v1/voice",
+            headers={
+                "Authorization": f"Basic {INWORLD_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "voiceId": INWORLD_VOICE_ID,
+                "modelId": "inworld-tts-1.5-max",
+                "text": text,
+                "audioConfig": {"audioEncoding": "WAV"},
+            },
+            timeout=30,
+        )
+        response.raise_for_status()
+        audio_bytes = base64.b64decode(response.json()["audioContent"])
+        sound = pygame.mixer.Sound(io.BytesIO(audio_bytes))
+        channel = sound.play()
+        while channel.get_busy():
+            pygame.time.wait(50)
     except Exception as e:
         print(f"[TTS error: {e}]")
 
 
 def ask_claude(user_message: str) -> str:
-    """Send a message to Claude and return the response text."""
     conversation_history.append({"role": "user", "content": user_message})
     response = claude.messages.create(
         model=MODEL,
@@ -73,7 +76,6 @@ def ask_claude(user_message: str) -> str:
 
 
 def listen_microphone() -> str | None:
-    """Listen for a voice command and return transcribed text, or None on failure."""
     with sr.Microphone() as source:
         print("Listening... (speak now)")
         recognizer.adjust_for_ambient_noise(source, duration=0.5)
@@ -92,27 +94,20 @@ def listen_microphone() -> str | None:
 
 
 def get_input() -> str | None:
-    """Prompt the user: choose mic or text input."""
     print("\n[M] Microphone  [T] Type  [Q] Quit")
     choice = input("Choice: ").strip().upper()
     if choice == "Q":
         return None
     if choice == "M":
         return listen_microphone()
-    # default to text
     return input("You: ").strip() or None
 
 
-def main():
+def main() -> None:
     print("=" * 50)
     print("  JARVIS AI Assistant")
     print("=" * 50)
     print("Say 'exit' or 'quit' to stop.\n")
-
-    if not ANTHROPIC_API_KEY:
-        print("WARNING: ANTHROPIC_API_KEY not set.")
-    if not INWORLD_API_KEY:
-        print("WARNING: INWORLD_API_KEY not set — TTS will be skipped.\n")
 
     while True:
         user_text = get_input()
@@ -123,11 +118,7 @@ def main():
         print("JARVIS: thinking...")
         reply = ask_claude(user_text)
         print(f"JARVIS: {reply}\n")
-
-        if INWORLD_API_KEY:
-            threading.Thread(target=speak, args=(reply,), daemon=True).start()
-            # wait briefly so playback starts before next prompt
-            import time; time.sleep(0.3)
+        threading.Thread(target=speak, args=(reply,), daemon=True).start()
 
 
 if __name__ == "__main__":
