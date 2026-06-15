@@ -11,6 +11,8 @@ import requests
 import speech_recognition as sr
 import pygame
 from dotenv import load_dotenv
+import orb as _orb
+import screen as _screen
 
 load_dotenv()
 
@@ -47,6 +49,7 @@ def get_location() -> str:
 
 
 def speak(text: str) -> None:
+    _orb.set_mode("speaking")
     try:
         response = requests.post(
             "https://api.inworld.ai/tts/v1/voice",
@@ -64,12 +67,24 @@ def speak(text: str) -> None:
         )
         response.raise_for_status()
         audio_bytes = base64.b64decode(response.json()["audioContent"])
+
+        # feed amplitude to orb while playing
+        buf_np = np.frombuffer(audio_bytes[44:], dtype=np.int16).astype(np.float32)
+        chunk = 1024
         sound = pygame.mixer.Sound(io.BytesIO(audio_bytes))
         channel = sound.play()
+        idx = 0
         while channel.get_busy():
-            pygame.time.wait(50)
+            if idx + chunk < len(buf_np):
+                rms = float(np.sqrt(np.mean(buf_np[idx:idx + chunk] ** 2)))
+                _orb.set_amplitude(min(1.0, rms / 8000))
+                idx += chunk
+            pygame.time.wait(20)
     except Exception as e:
         print(f"[TTS error: {e}]")
+    finally:
+        _orb.set_amplitude(0.0)
+        _orb.set_mode("idle")
 
 
 def ask_claude(user_message: str) -> str:
@@ -97,7 +112,7 @@ def listen() -> str:
     min_speech_chunks = int(0.4 * sample_rate / chunk)
     max_chunks = int(15 * sample_rate / chunk)
 
-    print("Listening...")
+    _orb.set_mode("listening")
     frames: list[np.ndarray] = []
     speech_started = False
     silent_count = 0
@@ -108,6 +123,7 @@ def listen() -> str:
             data, _ = stream.read(chunk)
             frames.append(data.copy())
             rms = float(np.sqrt(np.mean(data.astype(np.float32) ** 2)))
+            _orb.set_amplitude(min(1.0, rms / 3000))
             if rms > silence_rms:
                 speech_started = True
                 silent_count = 0
@@ -116,6 +132,9 @@ def listen() -> str:
                 silent_count += 1
                 if silent_count >= silence_chunks_needed and speech_count >= min_speech_chunks:
                     break
+
+    _orb.set_amplitude(0.0)
+    _orb.set_mode("idle")
 
     audio_array = np.concatenate(frames)
     buf = io.BytesIO()
@@ -126,50 +145,46 @@ def listen() -> str:
         wf.writeframes(audio_array.tobytes())
     buf.seek(0)
 
-    print("Processing...")
     recognizer = sr.Recognizer()
     with sr.AudioFile(buf) as source:
         audio = recognizer.record(source)
     return recognizer.recognize_google(audio)  # type: ignore[return-value]
 
 
-def get_input() -> str | None:
-    print("\n[M] Microphone  [T] Type  [Q] Quit")
-    choice = input("Choice: ").strip().upper()
-    if choice == "Q":
-        return None
-    if choice == "M":
+def handle_input(text_or_none) -> None:
+    """Called by screen.py when user submits text or triggers mic."""
+    if text_or_none is None:
+        # mic mode
         try:
-            return listen()
+            user_text = listen()
         except sr.UnknownValueError:
-            print("Could not understand audio.")
+            _screen.add_line("jarvis", "I didn't catch that. Could you repeat?")
+            return
         except sr.RequestError as e:
-            print(f"Speech recognition error: {e}")
-        return None
-    return input("You: ").strip() or None
+            _screen.add_line("jarvis", f"Speech error: {e}")
+            return
+    else:
+        user_text = text_or_none.strip()
+
+    if not user_text or user_text.lower() in {"exit", "quit"}:
+        return
+
+    _screen.add_line("user", user_text)
+    reply = ask_claude(user_text)
+    _screen.add_line("jarvis", reply)
+    threading.Thread(target=speak, args=(reply,), daemon=True).start()
 
 
 def main() -> None:
-    print("=" * 50)
-    print("  JARVIS AI Assistant")
-    print("=" * 50)
-    print("Say 'exit' or 'quit' to stop.\n")
+    _screen.set_submit_callback(handle_input)
 
     location = get_location()
     greeting = f"Online and ready. Welcome back from {location}." if location else "Online and ready."
-    print(f"JARVIS: {greeting}\n")
+    _screen.add_line("jarvis", greeting)
     threading.Thread(target=speak, args=(greeting,), daemon=True).start()
 
-    while True:
-        user_text = get_input()
-        if user_text is None or user_text.lower() in {"exit", "quit"}:
-            print("JARVIS: Shutting down. Goodbye.")
-            break
-
-        print("JARVIS: thinking...")
-        reply = ask_claude(user_text)
-        print(f"JARVIS: {reply}\n")
-        threading.Thread(target=speak, args=(reply,), daemon=True).start()
+    # run the screen on the main thread (pygame requires it)
+    _screen.run()
 
 
 if __name__ == "__main__":
